@@ -32,8 +32,8 @@ const SCHEME := {
 	"beast": [["white", "rose", "lavender"], "vertical"],
 }
 
-## 그림의 대표색 (미니맵, 폭발 등)
-const TINT := {
+## 그림의 대표색 (미니맵, 폭발 등). register_points 로 등록한 그림의 색도 여기에 추가되므로 static var.
+static var TINT := {
 	"crescent": Color("ffd36b"),
 	"flame": Color("ffae5c"),
 	"wing": Color("9fe8ff"),
@@ -55,6 +55,10 @@ static func sample(key: String, step: float) -> Array:
 	var ck := "%s@%.3f" % [key, step]
 	if _cache.has(ck):
 		return _cache[ck]
+	if _points.has(key):
+		var thinned := _thin_points(key, step)
+		_cache[ck] = thinned
+		return thinned
 	var bb := _bbox(key)
 	var k := minf(W / bb.size.x, H / bb.size.y)
 	var src_step := step / k
@@ -100,6 +104,11 @@ static func _bbox(key: String) -> Rect2:
 
 ## 그림 안의 한 점(sample 결과 좌표)의 색. 팔레트를 그라데이션으로 섞는다.
 static func color_at(key: String, p: Vector2) -> Color:
+	if _points.has(key):
+		var cd: Dictionary = _points[key].cols
+		if cd.has(p):
+			return cd[p]
+		return TINT.get(key, PALETTE.white)
 	var sch: Array = SCHEME.get(key, [["white", "gold"], "radial"])
 	var cols: Array = sch[0]
 	var u := 0.0
@@ -130,6 +139,43 @@ static func register_image(key: String, img: Image, threshold := 0.5) -> void:
 	for ck in _cache.keys():
 		if String(ck).begins_with(key + "@"):
 			_cache.erase(ck)
+
+
+## 점 목록으로 그림 등록 (뮤직비디오 → 레벨 변환기 결과용, scripts/video_level.gd 가 부른다).
+## pts: 캔버스 중심(0,0) 기준 좌표 (sample 결과와 같은 좌표계, 대략 ±120 x ±67).
+## cols: 점마다 색 (비우면 tint). 점 순서를 그대로 지키므로(각도 정렬 안 함) 같은 개수의 그림끼리는
+## i 번째 별이 i 번째 점으로 간다 → 변환기가 맞춰 둔 별 짝이 게임에서도 유지된다.
+## spacing: 점 사이 최소 간격(캔버스 단위). 게임의 노드 간격(step)이 이보다 크면 같은 간격으로 솎아 낸다.
+static var _points := {}
+
+
+static func register_points(key: String, pts: PackedVector2Array, cols: Array = [], tint := Color.WHITE, spacing := 0.0) -> void:
+	var arr: Array = []
+	var cd := {}
+	for i in pts.size():
+		arr.append(pts[i])
+		if i < cols.size() and not cd.has(pts[i]):
+			cd[pts[i]] = cols[i]
+	_points[key] = {"pts": arr, "cols": cd, "spacing": spacing}
+	TINT[key] = tint
+	_bboxes.erase(key)
+	for ck in _cache.keys():
+		if String(ck).begins_with(key + "@"):
+			_cache.erase(ck)
+
+
+## step 이 등록 간격보다 크면 번호 간격(stride)으로 솎는다. 개수가 같은 그림끼리는 같은 번호가 남아 짝이 유지된다.
+static func _thin_points(key: String, step: float) -> Array:
+	var d: Dictionary = _points[key]
+	var arr: Array = d.pts
+	var sp: float = d.spacing
+	if sp <= 0.0 or step <= sp * 1.05:
+		return arr
+	var stride := maxi(1, ceili(pow(step / sp, 2.0)))
+	var out: Array = []
+	for i in range(0, arr.size(), stride):
+		out.append(arr[i])
+	return out
 
 
 static func inside(key: String, p: Vector2) -> bool:

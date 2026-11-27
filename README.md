@@ -58,13 +58,30 @@
 | `scripts/tune_panel.gd` | 테스트 화면 슬라이더 패널 |
 | `scripts/minimap.gd` | 격자 미니맵 |
 | `tools/make_audio.py` | 임시 음악과 효과음 합성 |
+| `tools/video_to_level.py` | 뮤직비디오 → 레벨 JSON 변환기 |
+| `scripts/video_level.gd` | 변환된 레벨 JSON 읽기 (Track1 과 같은 형식으로 돌려줌) |
 | `tests/autoplay.gd` | 자동 플레이 테스트 |
 
 ## 다음 단계에 붙일 것 (구조는 준비됨)
 
 - **협동 멀티**: 기체 상태가 `PlayerState` 로 분리되어 있고 `players` 배열을 돌며 이동·피격·부활을 처리함. 쓰러진 동료 위에 2.5초 머물면 부활하는 로직(`_update_revive`)이 이미 들어 있음. 네트워크 동기화만 붙이면 됨.
 - **스킬 추가**: `scripts/skills.gd` 에 항목 하나, `game.gd` 의 `use_skill()` 에 분기 하나.
-- **뮤직비디오 → 레벨 자동 생성**: `Shapes.register_image(key, image)` 로 영상 프레임을 그림으로 등록하고, 장면이 바뀌는 프레임 4~5개를 골라 formation 이벤트의 `keys` 로 넣으면 됨. 전환 연출은 그대로 적용됨.
+- **뮤직비디오 → 레벨 자동 생성**: 변환기는 아래 "뮤직비디오로 레벨 만들기" 참고. 게임이 `Track1.*` 대신 `VideoLevel.load_level()` 결과를 읽게 하는 연결만 남음.
+
+## 뮤직비디오로 레벨 만들기
+
+```
+python3 tools/video_to_level.py 뮤비.mp4 --name mv1 --bpm 128 --audio --preview-dir 미리보기폴더/
+```
+
+- 장면 전환(컷)을 찾아 가장 뚜렷한 것만 **최대 5개**(서로 8초 이상 간격) 남기고, 마디 경계에 맞춘다.
+- 한 마디(`--hold-beats 4`, 120 BPM 이면 2초)마다 프레임 하나를 골라 윤곽·밝기가 강한 칸을 엇갈린 격자에서 뽑아 별 좌표로 만든다. 별 수는 `--stars`(기본 240), 별 사이 최소 간격은 화면 너비 / `--cols`(기본 36).
+- 앞뒤 키프레임의 별을 최소 이동으로 짝지어(헝가리안) 같은 별이 조금씩 움직이며 그림을 따라가고, 컷에서는 snap 과 함께 새 그림으로 확 몰려간다. 색은 프레임에서 뽑아 `Shapes.PALETTE` 색으로 맞춘다.
+- 결과: `levels/<이름>.json` (키프레임 좌표·색, 컷, 장면 세기, Track1 형식의 SECTIONS / EVENTS). `--audio` 면 `music/<이름>.ogg` 도 뽑는다. `--preview-dir` 를 주면 장면마다 원본 | 별 미리보기 PNG.
+- `--mode scene` 이면 장면마다 새 무리(컷에서 이전 무리는 모여 사라지고 새 무리가 터져 나옴), 기본 `song` 은 곡 전체를 한 무리가 맡는다.
+- 게임에서: `var lv := VideoLevel.load_level("res://levels/mv1.json")` → 그림이 `Shapes.register_points` 로 등록되고 `lv.EVENTS`, `lv.SECTIONS`, `lv.LENGTH` 등이 Track1 상수와 같은 모양으로 들어 있다.
+- 검사: `VIDEO_LEVEL=res://levels/mv1.json godot --headless --path . res://tests/video_level_check.tscn`
+- 필요: ffmpeg, python3 + numpy + Pillow (scipy 는 있으면 사용). 내보내기(export) 때는 `levels/*.json` 을 export 필터의 비리소스 파일에 넣어야 한다.
 
 ## 테스트
 
