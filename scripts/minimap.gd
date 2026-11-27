@@ -52,6 +52,22 @@ func _draw() -> void:
 			continue
 		var r := 2.6 if b.big else (1.4 if b.form == null else 1.0)
 		draw_rect(Rect2(p - Vector2(r, r) * 0.5, Vector2(r, r)), b.col)
+	# 들어올 탄 벽 경고
+	var blink := 0.5 + 0.5 * sin(Time.get_ticks_msec() / 60.0)
+	for w in game.walls:
+		var a2: Rect2 = game.arena
+		var p1: Vector2
+		var p2: Vector2
+		match w.side:
+			"left":
+				p1 = a2.position; p2 = Vector2(a2.position.x, a2.end.y)
+			"right":
+				p1 = Vector2(a2.end.x, a2.position.y); p2 = a2.end
+			"top":
+				p1 = a2.position; p2 = Vector2(a2.end.x, a2.position.y)
+			_:
+				p1 = Vector2(a2.position.x, a2.end.y); p2 = a2.end
+		draw_line(p1 * s, p2 * s, Color(0.83, 1, 0.31, blink), 3.0)
 	var vr: Rect2 = game.view_rect()
 	draw_rect(Rect2(vr.position * s, vr.size * s), Color(1, 1, 1, 0.85), false, 1.0)
 	for pl in game.players:

@@ -8,6 +8,7 @@ var frame := 0
 var shots_dir := ""
 var max_bullets := 0
 var stats := {}
+var shot_done := {}
 
 
 func _ready() -> void:
@@ -54,7 +55,16 @@ func _process(_dt: float) -> void:
 			game.command_move(a.position + a.size * Vector2(randf(), randf()))
 	if frame % 300 == 0:
 		print("t=%.1f scene=%s bullets=%d forms=%d hp=%d hits=%d kills=%d" % [game.t, game.scene_name, game.bullets.size(), game.formations.size(), game.me.hp, game.hits_taken, game.kills])
-	if shots_dir != "":
+	var times := OS.get_environment("AUTOPLAY_SHOT_TIMES")
+	if shots_dir != "" and times != "":
+		# 지정한 초마다 한 장 (예: "33,37,40.5")
+		for ts in times.split(","):
+			var tv := float(ts)
+			if game.t >= tv and not shot_done.has(ts):
+				shot_done[ts] = true
+				await RenderingServer.frame_post_draw
+				get_viewport().get_texture().get_image().save_png("%s/s%05.1f.png" % [shots_dir, tv])
+	elif shots_dir != "":
 		game.overview_btn = (frame % 480) >= 240
 		if frame % 240 == 239:
 			await RenderingServer.frame_post_draw

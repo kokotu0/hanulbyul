@@ -29,6 +29,7 @@ const SCHEME := {
 	"burst": [["white", "peach", "rose"], "radial"],
 	"heart": [["peach", "rose", "lavender"], "vertical"],
 	"star5": [["white", "gold", "peach"], "radial"],
+	"beast": [["white", "rose", "lavender"], "vertical"],
 }
 
 ## 그림의 대표색 (미니맵, 폭발 등)
@@ -40,6 +41,7 @@ const TINT := {
 	"burst": Color("ffc9a3"),
 	"heart": Color("ff8fb8"),
 	"star5": Color("ffd36b"),
+	"beast": Color("ff8fb8"),
 }
 
 static var _cache := {}
@@ -169,12 +171,41 @@ static func inside(key: String, p: Vector2) -> bool:
 				if along >= 42.0 and along <= 62.0 and perp <= 8.0:
 					return true
 			return false
+		"beast":
+			# 별 괴수: 몸통, 머리, 뿔, 팔과 발톱, 다리. 눈은 비워 둔다.
+			if p.distance_to(Vector2(108, 34)) < 5.0 or p.distance_to(Vector2(132, 34)) < 5.0:
+				return false
+			if _in_ellipse(p, Vector2(120, 80), 44.0, 30.0, 0.0):
+				return true
+			if p.distance_to(Vector2(120, 38)) < 21.0:
+				return true
+			if Geometry2D.is_point_in_polygon(p, PackedVector2Array([Vector2(102, 26), Vector2(86, 0), Vector2(110, 20)])):
+				return true
+			if Geometry2D.is_point_in_polygon(p, PackedVector2Array([Vector2(138, 26), Vector2(154, 0), Vector2(130, 20)])):
+				return true
+			for side in [-1.0, 1.0]:
+				var sh := Vector2(120 + side * 38.0, 68)
+				var el := Vector2(120 + side * 78.0, 50)
+				var hand := Vector2(120 + side * 100.0, 30)
+				if _in_capsule(p, sh, el, 9.0) or _in_capsule(p, el, hand, 7.0):
+					return true
+				for k in 3:
+					var tip := hand + Vector2(side * (6.0 + k * 6.0), -14.0 + k * 9.0)
+					if _in_capsule(p, hand, tip + Vector2(side * 6.0, -4.0), 3.0):
+						return true
+				if _in_capsule(p, Vector2(120 + side * 22.0, 100), Vector2(120 + side * 34.0, 132), 8.0):
+					return true
+			return false
 		"heart":
 			var u := (p.x - 120.0) / 52.0
 			var w := -(p.y - 62.0) / 52.0
 			var q := u * u + w * w - 1.0
 			return q * q * q - u * u * w * w * w <= 0.0
 	return false
+
+
+static func _in_capsule(p: Vector2, a: Vector2, b: Vector2, r: float) -> bool:
+	return Geometry2D.get_closest_point_to_segment(p, a, b).distance_to(p) <= r
 
 
 static func _in_ellipse(p: Vector2, c: Vector2, rx: float, ry: float, rot: float) -> bool:

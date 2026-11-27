@@ -16,14 +16,23 @@ const COL_MOVE := Color("8fffc2")
 const COL_ATTACK := Color("ff6b8a")
 const BULLET_CORE := 3.0
 const BIG_CORE := 8.0
-const BIG_HP := 3
+## 날아오는 탄의 판정 반지름. 보이는 몸통 크기와 같다.
+const SHOT_CORE := 4.5
+const BIG_HP := 2
 const CASCADE_RADIUS := 170.0
 const WARN := 1.2
 const INVULN := 1.6
 const DRONE_VMAX := 430.0
 const DRONE_ACCEL := 1500.0
 const MAX_BULLETS := 6000
+## 날아오는 탄 색. 그림 별 팔레트(금, 살구, 장미, 라벤더, 얼음, 민트, 흰색)와 겹치지 않게 고른다.
+const C_SHOT := Color("ff6b4a")
+const C_WALL := Color("d4ff4f")
+const C_SKILL := Color("ff3f9e")
 const REVIVE_RADIUS := 60.0
+const SHIP_ACCEL := 2600.0
+const SHIP_DECEL := 3200.0
+const SHIP_TURN := 14.0
 const STAR_CAP_RATIO := 0.9
 const REVIVE_TIME := 2.5
 
@@ -66,6 +75,7 @@ class Bullet:
 	var cols: Array = []
 	var phase := 0
 	var rush := 0.0
+	var safe_until := -1.0
 
 
 class Emitter:
@@ -150,6 +160,22 @@ var shake := 0.0
 var flash := 0.0
 var bg_now := Color("05060f")
 var gates: Array = []
+var pop_text := ""
+var pop_t := 0.0
+## 하이라이트 때 카메라를 잠깐 뒤로 빼서 그림 전체가 보이게 (0~1)
+var cam_pull := 0.0
+var pre_gated := {}
+## 영화 같은 휴식 장면 (비어 있으면 평소 플레이)
+var cin: Dictionary = {}
+var cin_blend := 0.0
+var cin_rect := Rect2()
+var cin_caption := ""
+var region_name := ""
+## 지금 구역 전체 (무리 좌표의 기준). arena 는 그 안에서 기술마다 줄고 늘고 미끄러지는 "상자".
+var region := Rect2()
+var box_anim: Dictionary = {}
+## 괴수가 기술을 준비하는 중인 목록
+var windups: Array = []
 var cam_follow := Vector2.ZERO
 var bg_stars: Array = []
 
@@ -177,6 +203,8 @@ var tune_panel: PanelContainer
 var flash_rect: ColorRect
 var skill_label: Label
 var cell_label: Label
+var letterbox: Array = []
+var caption_label: Label
 
 
 func _ready() -> void:
@@ -221,9 +249,17 @@ func _ready() -> void:
 # ---------------------------------------------------------------- 상태
 
 func reset() -> void:
-	world = Tune.world_size()
-	var mg := minf(Tune.f("margin"), minf(world.x, world.y) * 0.3)
-	arena = Rect2(Vector2(mg, mg), world - Vector2(mg, mg) * 2.0)
+	world = Tune.world_size() * Vector2(Track1.WORLD_WIDE, 1.0)
+	region_name = Track1.START_REGION
+	region = _region_rect(region_name)
+	arena = region
+	box_anim = {}
+	cin = {}
+	cin_blend = 0.0
+	windups.clear()
+	cam_pull = 0.0
+	pre_gated = {}
+	pop_t = 0.0
 	t = 0.0
 	ev_index = 0
 	scene_name = Track1.SECTIONS[0].name
@@ -279,7 +315,14 @@ func seek(time: float) -> void:
 	var evs: Array = events
 	while ev_index < evs.size() and evs[ev_index].t < time:
 		var ev: Dictionary = evs[ev_index]
-		if ev.type == "formation" and ev.t + ev.dur > time:
+		if ev.type == "cinematic":
+			region_name = ev.to
+			region = _region_rect(ev.to)
+			arena = region
+			for pl in players:
+				pl.pos = _spawn_point(arena)
+			cam_follow = me.pos
+		elif ev.type == "formation" and ev.t + ev.dur > time:
 			_spawn_formation(ev, true)
 		elif ev.type == "emit" and ev.t + ev.dur > time:
 			var e := _spawn_emitter(ev)
@@ -296,7 +339,9 @@ func end_game(win: bool) -> void:
 	var title := Track1.TITLE
 	if win:
 		_play("clear")
-		var grade := "S" if hits_taken == 0 else ("A" if hits_taken <= 1 else ("B" if hits_taken <= 3 else "C"))
+		# 등급: 맞은 횟수와 격추 수를 함께 본다
+		var score := kills * 2 - hits_taken * 5
+		var grade := "S" if score >= 40 else ("A" if score >= 24 else ("B" if score >= 10 else "C"))
 		over_text.text = "%s · 끝까지 버텼어요\n등급 %s · 맞은 횟수 %d · 큰 별 격추 %d" % [title, grade, hits_taken, kills]
 	else:
 		over_text.text = "%s · %d%% 지점 (%s)\n큰 별 격추 %d" % [title, int(t / Track1.LENGTH * 100.0), _fmt_time(t), kills]
@@ -343,7 +388,7 @@ func _unhandled_input(ev: InputEvent) -> void:
 ## 조작: WASD(또는 방향키)로 이동, 마우스로 큰 별을 클릭하면 그 별을 노려 자동 사격.
 ## 키를 놓고 있으면 노린 별을 사거리까지 따라간다. 빈 곳을 클릭하면 조준 해제.
 func command(wpos: Vector2) -> void:
-	if not running or paused:
+	if not running or paused or cin_active():
 		return
 	var target: Bullet = pick(wpos, 40.0 / cam.zoom.x)
 	if target:
@@ -394,11 +439,17 @@ func _process(delta: float) -> void:
 	song_bar.queue_redraw()
 	time_label.text = "%s / %s" % [_fmt_time(t), _fmt_time(Track1.LENGTH)]
 	scene_label.text = "장면 · " + scene_name
-	hp_label.text = "HP  " + "●".repeat(maxi(me.hp, 0)) + "○".repeat(maxi(me.max_hp - me.hp, 0))
+	hp_label.text = "HP  " + "■".repeat(maxi(me.hp, 0)) + "□".repeat(maxi(me.max_hp - me.hp, 0))
 	hp_label.modulate = Color(1, 1, 1, 0.45 if me.invuln > 0.0 and fmod(me.invuln, 0.2) < 0.1 else 1.0)
 	kill_label.text = "큰 별 격추 %d" % kills
 	cell_label.text = "전체 맵 · 지금 %s 칸 · 흰 네모 = 내 화면" % Minimap.cell_name(world, me.pos)
 	flash_rect.color.a = flash * 0.32
+	var bh := 64.0 * cin_blend
+	letterbox[0].offset_bottom = bh
+	letterbox[1].offset_top = -bh
+	caption_label.text = cin_caption
+	caption_label.modulate.a = clampf(cin_blend * 1.4 - 0.3, 0.0, 1.0)
+	skill_label.modulate.a = 1.0 - cin_blend
 	var sk := PackedStringArray()
 	for key in Skills.LIST:
 		var cdv: float = me.skill_cd.get(key, 0.0)
@@ -415,7 +466,10 @@ func _update(dt: float) -> void:
 	# 음악이 있으면 음악 재생 위치에 맞춘다 (박자 싱크).
 	if music.playing:
 		var mt := music.get_playback_position() + AudioServer.get_time_since_last_mix() - AudioServer.get_output_latency()
-		t = mt if absf(mt - (t + dt)) < 0.25 else t + dt
+		# 음악 시계는 덩어리로 갱신되므로 바로 맞추지 않고 조금씩 따라가 끊김을 없앤다
+		t += dt
+		if absf(mt - t) < 0.25:
+			t += (mt - t) * minf(1.0, dt * 2.0)
 	else:
 		t += dt
 	shake = maxf(0.0, shake - dt * 2.0)
@@ -427,6 +481,8 @@ func _update(dt: float) -> void:
 	bg_target = Color("05060f").lerp(bg_target, Tune.f("bg_tint"))
 	bg_now = bg_now.lerp(bg_target, minf(1.0, dt * 1.5))
 	_run_events()
+	_update_cinematic()
+	_update_windups(dt)
 	if t >= Track1.LENGTH:
 		end_game(true)
 		return
@@ -442,6 +498,7 @@ func _update(dt: float) -> void:
 		q.vel *= 0.93
 		q.m -= dt / q.life
 	parts = parts.filter(func(q: Part) -> bool: return q.m > 0.0)
+	pop_t = maxf(0.0, pop_t - dt)
 	for g in gates:
 		g.t += dt
 	gates = gates.filter(func(g: Dictionary) -> bool: return g.t < 2.2)
@@ -455,6 +512,18 @@ func _run_events() -> void:
 		if s.t <= t:
 			scene_name = s.name
 	var evs: Array = events
+	# 무리 탄생 1초 전: 그 자리에 빛 고리를 미리 띄운다
+	var j := ev_index
+	while j < evs.size() and evs[j].t <= t + 1.0:
+		var fe: Dictionary = evs[j]
+		var key := "%s@%.2f" % [fe.get("name", ""), fe.t]
+		if fe.type == "formation" and not pre_gated.has(key):
+			pre_gated[key] = true
+			var rr := _region_at(fe.t)
+			var p0: Vector2 = rr.position + rr.size * (fe.path[0] as Vector2)
+			gates.append({"pos": p0, "t": 0.0, "col": Shapes.TINT[fe.keys[0]]})
+			cam_pull = maxf(cam_pull, 0.8)
+		j += 1
 	while ev_index < evs.size() and evs[ev_index].t <= t:
 		var ev: Dictionary = evs[ev_index]
 		ev_index += 1
@@ -477,6 +546,42 @@ func _run_events() -> void:
 				walls.append(w)
 			"snap":
 				_snap(ev)
+			"cinematic":
+				cin = {"t0": ev.t, "dur": ev.dur, "from": arena, "to": _region_rect(ev.to)}
+				cin_caption = ev.caption
+				region_name = ev.to
+				region = cin.to
+				box_anim = {}
+				# 휴식 시작: 날아다니던 탄은 반짝이며 사라지고 대기 중인 벽도 취소
+				for b in bullets:
+					if b.form == null:
+						b.die_at = t + randf() * 0.8
+				walls.clear()
+				rings.clear()
+				for pl in players:
+					pl.order = {}
+			"clear":
+				# 곡 끝맺음: 날아다니던 탄은 반짝이며 사라지고 무리는 흩어져 떠난다
+				for b in bullets:
+					if b.form == null:
+						b.die_at = t + randf() * 1.2
+				for f in formations:
+					if f.alive:
+						f.dur = t - f.t0
+				emitters.clear()
+				walls.clear()
+				rings.clear()
+			"box":
+				# 기술에 맞춰 다닐 수 있는 상자가 줄고 늘고 미끄러진다
+				if cin.is_empty():
+					var fr: Rect2 = ev.rect
+					var to := Rect2(region.position + region.size * fr.position, region.size * fr.size)
+					box_anim = {"t0": ev.t, "dur": ev.get("dur", 0.9), "from": arena, "to": to}
+			"windup":
+				var f := _find_form(ev.at)
+				if f:
+					cam_pull = 1.0
+					windups.append({"f": f, "t0": ev.t, "ev": ev, "aim": me.pos, "lock": false, "center": f.center})
 			"ring_in":
 				var r := RingIn.new()
 				r.center = _arena_point(ev.at)
@@ -484,7 +589,8 @@ func _run_events() -> void:
 				r.speed = ev.speed
 				r.gap = randf() * TAU
 				var far := 0.0
-				for c in [Vector2.ZERO, Vector2(world.x, 0), world, Vector2(0, world.y)]:
+				var rr := cur_region_rect().grow(Tune.f("margin"))
+				for c in [rr.position, Vector2(rr.end.x, rr.position.y), rr.end, Vector2(rr.position.x, rr.end.y)]:
 					far = maxf(far, r.center.distance_to(c))
 				r.r0 = far + 40.0
 				rings.append(r)
@@ -492,6 +598,7 @@ func _run_events() -> void:
 
 ## 하이라이트: 화면이 번쩍이고, 무리가 바깥으로 확 퍼지며, 중심에서 탄 고리가 터져 나간다.
 func _snap(ev: Dictionary) -> void:
+	cam_pull = 1.0
 	var f := _find_form(ev.at)
 	var c: Vector2 = f.center if f else arena.get_center()
 	var ns := Tune.f("node_speed")
@@ -508,11 +615,142 @@ func _snap(ev: Dictionary) -> void:
 		var a0 := randf() * TAU
 		for i in cnt:
 			var an := a0 + float(i) / cnt * TAU
-			_shot(c, Vector2.from_angle(an) * (170.0 + 50.0 * k) * ns, Color("fff8ec"))
+			_shot(c, Vector2.from_angle(an) * (170.0 + 50.0 * k) * ns, C_SHOT)
 
 
 func _arena_point(f: Vector2) -> Vector2:
-	return arena.position + arena.size * f
+	var r := cur_region_rect()
+	return r.position + r.size * f
+
+
+## 지금 기준이 되는 구역. 휴식 장면 중에는 옮겨 갈 구역.
+## time 시각에 기준이 될 구역 (그때까지의 마지막 휴식 장면의 목적지)
+func _region_at(time: float) -> Rect2:
+	var name: String = Track1.START_REGION
+	for ev in events:
+		if ev.t > time:
+			break
+		if ev.type == "cinematic":
+			name = ev.to
+	return _region_rect(name)
+
+
+func cur_region_rect() -> Rect2:
+	return region
+
+
+func _region_rect(name: String) -> Rect2:
+	var r: Rect2 = Track1.REGIONS[name]
+	var rect := Rect2(world * r.position, world * r.size)
+	var mg := minf(Tune.f("margin"), minf(rect.size.x, rect.size.y) * 0.3)
+	return rect.grow(-mg)
+
+
+func _spawn_point(r: Rect2) -> Vector2:
+	return Vector2(r.get_center().x, r.position.y + r.size.y * 0.78)
+
+
+func cin_active() -> bool:
+	return not cin.is_empty()
+
+
+## 살짝 지나쳤다 돌아오는 탄력 있는 움직임
+static func _ease_back(x: float) -> float:
+	x = clampf(x, 0.0, 1.0)
+	var c := 1.4
+	var y := x - 1.0
+	return 1.0 + (c + 1.0) * y * y * y + c * y * y
+
+
+static func _lerp_rect(a: Rect2, b: Rect2, w: float) -> Rect2:
+	return Rect2(a.position.lerp(b.position, w), a.size.lerp(b.size, w))
+
+
+## 휴식 장면 진행: 다닐 수 있는 구역이 새 구역으로 옮겨 가고, 카메라는 두 구역을 함께 담은 채 옆으로 이동한다.
+func _update_cinematic() -> void:
+	if not box_anim.is_empty():
+		var bu: float = (t - box_anim.t0) / box_anim.dur
+		if bu >= 1.0:
+			arena = box_anim.to
+			box_anim = {}
+		else:
+			arena = _lerp_rect(box_anim.from, box_anim.to, _ease_back(bu))
+	if cin.is_empty():
+		return
+	var u: float = (t - cin.t0) / cin.dur
+	var from: Rect2 = cin.from
+	var to: Rect2 = cin.to
+	var w := _sm(u)
+	if u >= 1.0:
+		arena = to
+		cin = {}
+		return
+	arena = _lerp_rect(from, to, w)
+	var size := from.size.max(to.size) * 1.12
+	var c := from.get_center().lerp(to.get_center(), w)
+	cin_rect = Rect2(c - size * 0.5, size)
+
+
+## 괴수의 기술 준비: 빛이 모이고 예고선이 보이다가, 끝나는 순간 그 기술이 날아온다.
+func _update_windups(dt: float) -> void:
+	for wu in windups:
+		var f: Formation = wu.f
+		var ev: Dictionary = wu.ev
+		if f.alive:
+			wu.center = f.center
+		var u: float = (t - wu.t0) / ev.dur
+		if u < 0.7:
+			wu.aim = me.pos
+		elif not wu.lock:
+			wu.lock = true
+			_play("click")
+		# 빛이 중심으로 모여드는 입자
+		if parts.size() < 1200:
+			for i in 3:
+				var a := randf() * TAU
+				var q := Part.new()
+				var r := randf_range(260.0, 520.0)
+				q.pos = wu.center + Vector2.from_angle(a) * r
+				q.vel = -Vector2.from_angle(a) * r * 1.6
+				q.life = 0.6
+				q.col = Shapes.TINT[f.keys[0]]
+				parts.append(q)
+		if u >= 1.0:
+			_fire_attack(wu)
+			wu.done = true
+	windups = windups.filter(func(wu: Dictionary) -> bool: return not wu.get("done", false))
+
+
+## 예고선이 가리키는 방향들
+func _attack_dirs(wu: Dictionary) -> Array:
+	var ev: Dictionary = wu.ev
+	var base: float = (wu.aim - wu.center).angle()
+	var dirs: Array = []
+	var n: int = ev.get("count", 3)
+	match ev.attack:
+		"beams":
+			var spread: float = ev.get("spread", 0.8)
+			for i in n:
+				dirs.append(base + (float(i) / maxf(n - 1, 1) - 0.5) * spread * 2.0)
+		"claws":
+			for i in n:
+				dirs.append(base + (i - (n - 1) * 0.5) * 0.35)
+		_:
+			for i in n:
+				dirs.append(base + PI + i * 0.9)
+	return dirs
+
+
+func _fire_attack(wu: Dictionary) -> void:
+	var e := Emitter.new()
+	e.form = wu.f
+	e.center = wu.center
+	var ev: Dictionary = wu.ev
+	e.ev = {"kind": ev.attack, "dur": 1.6, "dirs": _attack_dirs(wu), "speed": 260.0, "count": ev.get("count", 3)}
+	emitters.append(e)
+	flash = maxf(flash, 0.6)
+	shake = maxf(shake, 0.5)
+	_play("boom")
 
 
 func _find_form(name: String) -> Formation:
@@ -533,7 +771,7 @@ func _spawn_formation(ev: Dictionary, settled: bool) -> void:
 	f.exit = ev.exit
 	f.fire = ev.fire
 	f.sweep = ev.get("sweep", Vector2.RIGHT).normalized()
-	f.sc = arena.size.x * ev.size / Shapes.W
+	f.sc = cur_region_rect().size.x * ev.size / Shapes.W
 	for p in ev.path:
 		f.wps.append(_arena_point(p))
 	var step := Tune.f("node_spacing") / f.sc
@@ -550,8 +788,8 @@ func _spawn_formation(ev: Dictionary, settled: bool) -> void:
 	formations.append(f)
 	if not settled:
 		# 새 무리가 태어나는 자리: 빛 고리가 퍼지고 그 중심에서 별들이 쏟아져 나온다
-		gates.append({"pos": f.center, "t": 0.0, "col": Shapes.TINT[f.keys[0]]})
 		_burst(f.center, Color.WHITE, 30, 360.0)
+		cam_pull = maxf(cam_pull, 0.8)
 		flash = maxf(flash, 0.35)
 	var room := MAX_BULLETS - bullets.size()
 	n_max = mini(n_max, maxi(room, 0))
@@ -570,6 +808,8 @@ func _spawn_formation(ev: Dictionary, settled: bool) -> void:
 		b.ph = randf() * TAU
 		b.col = b.cols[0]
 		b.pos = _drone_target(b, t - f.t0) if settled else f.center
+		if not settled:
+			b.safe_until = t + 1.4
 		bullets.append(b)
 
 
@@ -649,7 +889,7 @@ func _update_formations(dt: float) -> void:
 					if b.pos.distance_to(me.pos) < 1100.0:
 						var a0: float = (me.pos - b.pos).angle()
 						for k in [-1, 0, 1]:
-							_shot(b.pos, Vector2.from_angle(a0 + k * 0.22) * 210.0 * ns, Color("ff9fcf"))
+							_shot(b.pos, Vector2.from_angle(a0 + k * 0.22) * 210.0 * ns, C_SKILL)
 		else:
 			match f.exit:
 				"collapse":
@@ -679,6 +919,7 @@ func _shot(p: Vector2, v: Vector2, col: Color, life := 1e9) -> void:
 	b.pos = p
 	b.vel = v.limit_length(star_cap())
 	b.col = col
+	b.core = SHOT_CORE
 	b.life = life * v.length() / maxf(b.vel.length(), 1.0) if life < 1e8 else life
 	bullets.append(b)
 
@@ -700,8 +941,41 @@ func _update_emitters(dt: float) -> void:
 					for a in arms:
 						var spin: float = e.t * (1.1 if ev.kind == "spiral" else 0.0) + (sin(e.t * 2.0) * 0.8 if ev.kind == "flower" else 0.0)
 						var an: float = e.a0 + spin + a * TAU / arms
-						_shot(e.center, Vector2.from_angle(an) * sp, Color("9fe8ff") if ev.kind == "spiral" else Color("c9b2ff"))
+						_shot(e.center, Vector2.from_angle(an) * sp, C_SHOT)
+			"beams":
+				# 예고선을 따라 굵은 빛줄기
+				while e.acc > 0.05:
+					e.acc -= 0.05
+					for d in ev.dirs:
+						var dir := Vector2.from_angle(d)
+						for side in [-1, 0, 1]:
+							_shot(e.center + dir * 60.0 + dir.orthogonal() * side * 14.0, dir * ev.speed * ns, C_SKILL)
+				if e.t > 1.2:
+					e.ev.kind = "done"
+			"claws":
+				# 발톱 세 번: 부채꼴 탄막이 바깥으로 휘몰아친다
+				var hits: int = e.ev.get("hit", 0)
+				if hits < ev.dirs.size() and e.t >= hits * 0.35:
+					var d: float = ev.dirs[hits]
+					for i in 26:
+						var an := d + (float(i) / 25.0 - 0.5) * 2.1
+						_shot(e.center + Vector2.from_angle(an) * 90.0, Vector2.from_angle(an) * ev.speed * ns * (0.85 + 0.15 * sin(i * 0.7)), C_SKILL)
+					e.ev.hit = hits + 1
+			"rings_burst":
+				pass
 			"rings":
+				if not ev.has("rate"):
+					# 기술로 쓰는 원형 파동: 틈이 있는 고리 여러 겹 (틈 방향은 예고선)
+					var w: int = e.ev.get("hit", 0)
+					if w < ev.dirs.size() and e.t >= w * 0.45:
+						var gap: float = ev.dirs[w]
+						for i in 96:
+							var an := float(i) / 96.0 * TAU
+							if absf(wrapf(an - gap, -PI, PI)) < 0.3:
+								continue
+							_shot(e.center, Vector2.from_angle(an) * 170.0 * ns, C_SHOT)
+						e.ev.hit = w + 1
+					continue
 				while e.acc > ev.rate:
 					e.acc -= ev.rate
 					var gap := randf() * TAU
@@ -710,7 +984,7 @@ func _update_emitters(dt: float) -> void:
 						var an := float(i) / cnt * TAU
 						if absf(wrapf(an - gap, -PI, PI)) < 0.28:
 							continue
-						_shot(e.center, Vector2.from_angle(an) * sp, Color("ff9fcf"))
+						_shot(e.center, Vector2.from_angle(an) * sp, C_SHOT)
 	emitters = emitters.filter(func(e: Emitter) -> bool: return e.t < e.ev.dur)
 
 
@@ -718,16 +992,18 @@ func _update_emitters(dt: float) -> void:
 func _update_walls() -> void:
 	var ns := Tune.f("node_speed")
 	var gap_w := 300.0
-	var spacing := 54.0
+	var spacing := 22.0
 	for w in walls:
 		if t < w.spawn_t:
 			continue
 		var horiz: bool = w.side in ["left", "right"]
-		var edge_len := arena.size.y if horiz else arena.size.x
-		var span := world.y if horiz else world.x
+		# 출발선: 구역 테두리에서 여유 구역만큼 바깥
+		var out := Tune.f("margin")
+		var lo := (arena.position.y if horiz else arena.position.x) - out
+		var span := (arena.size.y if horiz else arena.size.x) + out * 2.0
 		var s := 0.0
 		while s < span:
-			var along := s - (arena.position.y if horiz else arena.position.x)
+			var along := s - out
 			var in_gap := false
 			for g in w.gaps:
 				if absf(along - g) < gap_w * 0.5:
@@ -735,16 +1011,17 @@ func _update_walls() -> void:
 			if not in_gap:
 				var p: Vector2
 				var v: Vector2
+				var q := lo + s
 				match w.side:
 					"left":
-						p = Vector2(4, s); v = Vector2(1, 0)
+						p = Vector2(arena.position.x - out, q); v = Vector2(1, 0)
 					"right":
-						p = Vector2(world.x - 4, s); v = Vector2(-1, 0)
+						p = Vector2(arena.end.x + out, q); v = Vector2(-1, 0)
 					"top":
-						p = Vector2(s, 4); v = Vector2(0, 1)
+						p = Vector2(q, arena.position.y - out); v = Vector2(0, 1)
 					_:
-						p = Vector2(s, world.y - 4); v = Vector2(0, -1)
-				_shot(p, v * w.speed * ns, Color("ffd36b"))
+						p = Vector2(q, arena.end.y + out); v = Vector2(0, -1)
+				_shot(p, v * w.speed * ns, C_WALL)
 			s += spacing
 		w.speed = -1.0
 	walls = walls.filter(func(w: Wall) -> bool: return w.speed > 0.0)
@@ -758,7 +1035,7 @@ func _update_walls() -> void:
 			if absf(wrapf(an - r.gap, -PI, PI)) * r.r0 < 170.0:
 				continue
 			var dir := Vector2.from_angle(an)
-			_shot(r.center + dir * r.r0, -dir * v, Color.WHITE, r.r0 / v + 0.6)
+			_shot(r.center + dir * r.r0, -dir * v, C_WALL, r.r0 / v + 0.6)
 		r.speed = -1.0
 	rings = rings.filter(func(r: RingIn) -> bool: return r.speed > 0.0)
 
@@ -784,6 +1061,18 @@ func _step_player(pl: PlayerState, dt: float, mv: Vector2) -> void:
 		pl.skill_cd[k] = maxf(0.0, pl.skill_cd[k] - dt)
 	if pl.downed:
 		return
+	if cin_active():
+		# 휴식 장면: 조작 없이 새 구역으로 날아간다 (무적)
+		var tgt := _spawn_point(cin.to)
+		var left: float = maxf(cin.t0 + cin.dur * 0.75 - t, 0.2)
+		var d := tgt - pl.pos
+		var sp := minf(d.length() / left, d.length() / dt)
+		pl.pos += d.normalized() * sp * dt if d.length() > 1.0 else Vector2.ZERO
+		if d.length() > 4.0:
+			pl.angle = d.angle()
+		pl.invuln = maxf(pl.invuln, 0.6)
+		pl.order = {}
+		return
 	if pl.dash_t > 0.0:
 		pl.dash_t -= dt
 		pl.pos = (pl.pos + pl.dash_dir * Skills.DASH_SPEED * dt).clamp(arena.position, arena.end)
@@ -804,23 +1093,36 @@ func _step_player(pl: PlayerState, dt: float, mv: Vector2) -> void:
 				mv = d / l
 		elif l > rng * 0.92:
 			mv = d / l
+	# 가속·감속으로 부드럽게 움직이고, 방향도 부드럽게 돈다
+	var want_vel := mv.normalized() * spd if mv != Vector2.ZERO else Vector2.ZERO
+	var acc := SHIP_ACCEL if want_vel != Vector2.ZERO else SHIP_DECEL
+	pl.vel = pl.vel.move_toward(want_vel, acc * dt)
+	pl.pos += pl.vel * dt
+	var clamped := pl.pos.clamp(arena.position, arena.end)
+	if clamped.x != pl.pos.x:
+		pl.vel.x = 0.0
+	if clamped.y != pl.pos.y:
+		pl.vel.y = 0.0
+	pl.pos = clamped
 	var want = null
-	if mv != Vector2.ZERO:
-		pl.pos += mv.normalized() * spd * dt
-		want = mv.angle()
-	pl.pos = pl.pos.clamp(arena.position, arena.end)
+	if pl.vel.length() > 30.0:
+		want = pl.vel.angle()
 	if pl.order.get("type", "") == "attack":
 		var d: Vector2 = pl.order.target.pos - pl.pos
 		if d.length() <= rng:
 			want = d.angle()
-			if pl.cd <= 0.0 and absf(_angd(pl.angle, want)) < 0.25:
+			# 유도 미사일이라 기체가 완전히 돌지 않아도 쏜다
+			if pl.cd <= 0.0:
 				_fire(pl, pl.order.target)
 	if want != null:
-		pl.angle += clampf(_angd(pl.angle, want), -12.0 * dt, 12.0 * dt)
+		pl.angle += _angd(pl.angle, want) * (1.0 - exp(-SHIP_TURN * dt))
+	# 기울기(뱅크): 옆으로 움직일 때 살짝 기울어 보이게
+	var side_v := pl.vel.dot(Vector2.from_angle(pl.angle + PI / 2)) / maxf(spd, 1.0)
+	pl.bank = lerpf(pl.bank, clampf(side_v, -1.0, 1.0), 1.0 - exp(-8.0 * dt))
 
 
 func use_skill(pl: PlayerState, key: String, aim: Vector2) -> void:
-	if not running or paused or pl.downed or pl.skill_cd.get(key, 1.0) > 0.0:
+	if cin_active() or not running or paused or pl.downed or pl.skill_cd.get(key, 1.0) > 0.0:
 		return
 	pl.skill_cd[key] = Skills.LIST[key].cd
 	match key:
@@ -901,13 +1203,21 @@ func _kill(tg: Bullet, by: PlayerState) -> void:
 	_play("boom")
 	hitstop = 0.04
 	shake = 0.35
+	# 보상: 주변 별과 날아오던 탄이 함께 무너지고, 섬광 쿨다운이 줄고, 6개마다 HP 1칸 회복
 	for b in bullets:
 		if b.dead or b.big or b.die_at >= 0.0:
 			continue
 		var q: float = b.pos.distance_to(tg.pos)
-		if q < CASCADE_RADIUS:
+		if q < CASCADE_RADIUS * (1.4 if b.form == null else 1.0):
 			b.die_at = t + q / 420.0
 			b.vel += (b.pos - tg.pos) / maxf(q, 1.0) * 160.0
+	if by:
+		by.skill_cd["nova"] = maxf(0.0, by.skill_cd.get("nova", 0.0) - 2.5)
+		if by.kills % 6 == 0 and by.hp < by.max_hp and not by.downed:
+			by.hp += 1
+			_burst(by.pos, Color("9ff5d0"), 24, 200.0)
+			pop_text = "HP +1"
+			pop_t = 1.2
 	if me.order.get("type", "") == "attack" and me.order.target == tg:
 		var best: Bullet = null
 		var bd := Tune.f("attack_range") * 1.4
@@ -928,7 +1238,8 @@ func _update_bullets(dt: float) -> bool:
 	for pl in players:
 		if pl.alive() and pl.invuln <= 0.0 and pl.dash_t <= 0.0:
 			targets.append(pl)
-	var bounds := Rect2(Vector2(-80, -80), world + Vector2(160, 160))
+	# 날아가는 탄은 지금 구역에서 한참 벗어나면 사라진다
+	var bounds := cur_region_rect().grow(Tune.f("margin") + 700.0)
 	for b in bullets:
 		if b.dead:
 			continue
@@ -948,6 +1259,8 @@ func _update_bullets(dt: float) -> bool:
 			if b.life <= 0.0 or not bounds.has_point(b.pos):
 				b.dead = true
 				continue
+		if t < b.safe_until:
+			continue
 		var rr: float = hr + b.core
 		for pl in targets:
 			if pl in hit_list:
@@ -1044,8 +1357,17 @@ func _update_camera(dt: float) -> void:
 	var vs := _view_size()
 	var fit := minf(vs.x / world.x, vs.y / world.y) * 0.96
 	var k := lerpf(Tune.f("view_zoom"), fit, zoom_t)
-	cam_follow += (me.pos - cam_follow) * minf(1.0, dt * 8.0)
+	cam_follow += (me.pos - cam_follow) * (1.0 - exp(-9.0 * dt))
 	var pos := cam_follow.lerp(world * 0.5, zoom_t)
+	# 하이라이트·탄생·기술 준비 때 잠깐 뒤로 빠진다
+	cam_pull = maxf(0.0, cam_pull - dt * 0.35)
+	k *= lerpf(1.0, 0.5, _sm(cam_pull) * (1.0 - zoom_t))
+	# 휴식 장면: 멀리 빠져서 두 구역을 함께 보며 옆으로 이동
+	cin_blend += ((1.0 if cin_active() else 0.0) - cin_blend) * minf(1.0, dt * 2.2)
+	if cin_blend > 0.001:
+		var ck := minf(vs.x / cin_rect.size.x, vs.y / cin_rect.size.y)
+		k = lerpf(k, ck, cin_blend)
+		pos = pos.lerp(cin_rect.get_center(), cin_blend)
 	var full := get_viewport().get_visible_rect().size
 	var shift := (full.x - vs.x) * 0.5 / k
 	cam.zoom = Vector2(k, k)
@@ -1083,7 +1405,37 @@ func _draw() -> void:
 			var r: float = s[1] / k * 0.6 + s[1] * 0.4
 			draw_rect(Rect2(p, Vector2(r, r)), sc)
 	draw_rect(Rect2(Vector2.ZERO, world), Color(1, 1, 1, 0.08), false, 2.0 / k)
-	draw_rect(arena, Color(0.56, 1, 0.76, 0.16), false, 2.0 / k)
+	var moving := not box_anim.is_empty() or not cin.is_empty()
+	var ba := 0.16 + (0.5 + 0.3 * sin(t * 20.0) if moving else 0.0)
+	draw_rect(arena, Color(0.56, 1, 0.76, ba), false, (2.0 + (3.0 if moving else 0.0)) / k)
+	# 상자 모서리 장식
+	var cl := minf(arena.size.x, arena.size.y) * 0.06
+	var cc := Color(0.56, 1, 0.76, 0.55)
+	for corner in [arena.position, Vector2(arena.end.x, arena.position.y), arena.end, Vector2(arena.position.x, arena.end.y)]:
+		var sx := 1.0 if corner.x == arena.position.x else -1.0
+		var sy := 1.0 if corner.y == arena.position.y else -1.0
+		draw_line(corner, corner + Vector2(cl * sx, 0), cc, 4.0 / k)
+		draw_line(corner, corner + Vector2(0, cl * sy), cc, 4.0 / k)
+	# 괴수 기술 예고
+	for wu in windups:
+		var u: float = clampf((t - wu.t0) / wu.ev.dur, 0.0, 1.0)
+		var blink := 0.6 + 0.4 * sin(t * (10.0 + 20.0 * u))
+		var col := Color(1, 0.45, 0.6, (0.12 + 0.5 * u) * blink)
+		var c0: Vector2 = wu.center
+		match wu.ev.attack:
+			"beams":
+				for d in _attack_dirs(wu):
+					var dir := Vector2.from_angle(d)
+					draw_line(c0, c0 + dir * 4000.0, col, (10.0 + 30.0 * u) / maxf(k, 0.2) * 0.5)
+			"claws":
+				for d in _attack_dirs(wu):
+					draw_arc(c0, 160.0 + 500.0 * u, d - 1.05, d + 1.05, 32, Color(1, 0.68, 0.36, col.a), 6.0 / k)
+			_:
+				for i in 3:
+					draw_arc(c0, fmod(t * 300.0 + i * 220.0, 900.0) + 100.0, 0, TAU, 96, Color(1, 1, 1, col.a * 0.6), 3.0 / k)
+				for d in _attack_dirs(wu):
+					var gd := Vector2.from_angle(d)
+					draw_line(c0 + gd * 120.0, c0 + gd * 900.0, Color(0.56, 1, 0.76, col.a), 6.0 / k)
 	# 바깥 탄 경고
 	for w in walls:
 		var a := clampf(1.0 - (w.spawn_t - t) / WARN, 0.0, 1.0)
@@ -1130,25 +1482,24 @@ func _draw_wall_warning(w: Wall, col: Color, k: float) -> void:
 func _draw_fx(c: CanvasItem) -> void:
 	var k := cam.zoom.x
 	var vr := _screen_world_rect()
-	var spin := t * 1.2
 	for b in bullets:
 		if not vr.has_point(b.pos):
 			continue
 		var free: bool = b.form == null
-		var r := 20.0 if b.big else maxf(11.0 if free else 9.0, 3.0 / k)
-		c.draw_texture_rect(glow_tex, Rect2(b.pos - Vector2(r, r), Vector2(r, r) * 2.0), false, b.col)
+		var r := 20.0 if b.big else maxf(b.core * 3.4 if free else 7.5, 3.0 / k)
+		var gc: Color = b.col
+		if free:
+			gc.a = 0.55
+		elif not b.big:
+			# 그림 별은 은은하게, 막 태어난 별은 더 흐리게
+			gc.a = 0.5 * (0.35 if t < b.safe_until else 1.0)
+		c.draw_texture_rect(glow_tex, Rect2(b.pos - Vector2(r, r), Vector2(r, r) * 2.0), false, gc)
+		if free and not b.big:
+			# 날아오는 탄: 진행 방향 반대로 옅은 꼬리
+			c.draw_line(b.pos, b.pos - b.vel * 0.07, Color(b.col, 0.45), maxf(b.core * 1.2, 2.0 / k))
 		if b.flash > 0.0:
 			var fr := r * 1.6
 			c.draw_texture_rect(glow_tex, Rect2(b.pos - Vector2(fr, fr), Vector2(fr, fr) * 2.0), false, Color(1, 1, 1, b.flash / 0.14))
-		if b.big:
-			var poly := PackedVector2Array()
-			for i in 8:
-				var an := i * PI / 4.0 + spin
-				poly.append(b.pos + Vector2.from_angle(an) * (2.2 if i % 2 == 1 else 8.0))
-			c.draw_colored_polygon(poly, Color.WHITE)
-		else:
-			# 날아오는 탄은 심을 더 크고 밝게 해서 그림 노드보다 잘 보이게
-			c.draw_circle(b.pos, maxf(2.4 if free else 1.4, 1.2 / k), Color(1, 1, 1, 1.0 if free else 0.8))
 	for q in missiles:
 		var n: int = q.trail.size()
 		for i in n:
@@ -1156,6 +1507,10 @@ func _draw_fx(c: CanvasItem) -> void:
 		c.draw_texture_rect(glow_tex, Rect2(q.pos - Vector2(9, 9), Vector2(18, 18)), false, Color("e8fbff"))
 	for q in parts:
 		c.draw_texture_rect(glow_tex, Rect2(q.pos - Vector2(6, 6), Vector2(12, 12)), false, Color(q.col, q.m))
+	for wu in windups:
+		var u: float = clampf((t - wu.t0) / wu.ev.dur, 0.0, 1.0)
+		var gr := 40.0 + 160.0 * u + 20.0 * sin(t * 14.0)
+		c.draw_texture_rect(glow_tex, Rect2(wu.center - Vector2(gr, gr), Vector2(gr, gr) * 2.0), false, Color(1, 0.75, 0.85, 0.5 + 0.5 * u))
 	for g in gates:
 		var a: float = 1.0 - g.t / 2.2
 		var core := 60.0 + 40.0 * sin(g.t * 9.0)
@@ -1168,6 +1523,7 @@ func _draw_fx(c: CanvasItem) -> void:
 func _draw_top(c: CanvasItem) -> void:
 	var k := cam.zoom.x
 	var vr := _screen_world_rect()
+	_draw_bullets(c, vr, k)
 	for b in bullets:
 		if b.big and b.hp < BIG_HP and vr.has_point(b.pos):
 			c.draw_arc(b.pos, 13, -PI / 2, -PI / 2 + TAU * b.hp / BIG_HP, 24, Color(1, 1, 1, 0.75), 2.0)
@@ -1181,24 +1537,153 @@ func _draw_top(c: CanvasItem) -> void:
 	var visible_ship := me.invuln <= 0.0 or fmod(me.invuln, 0.16) < 0.09
 	var s := Tune.f("ship_scale") * maxf(1.0, 0.55 / k)
 	if visible_ship:
-		c.draw_set_transform(me.pos, me.angle, Vector2(s, s))
-		var back := -me.recoil * 3.0
-		c.draw_colored_polygon(PackedVector2Array([
-			Vector2(13 + back, 0), Vector2(-8 + back, -9), Vector2(-4 + back, 0), Vector2(-8 + back, 9)
-		]), Color.WHITE)
-		c.draw_set_transform(Vector2.ZERO)
+		_draw_ship(c, me, s)
 	if me.invuln > 0.0:
-		c.draw_arc(me.pos, 18.0 * Tune.f("ship_scale") * maxf(1.0, 0.55 / k), 0, TAU, 32, Color(1, 0.62, 0.81, me.invuln / INVULN * 0.7), 2.0 / k)
-	# 판정 (실제 크기)
+		c.draw_arc(me.pos, 18.0 * s, 0, TAU, 32, Color(1, 0.62, 0.81, me.invuln / INVULN * 0.7), 2.0 / k)
+	# 판정 (실제 크기): 빨간 점 + 흰 테두리. 기체 그림 위에 늘 보인다.
 	var hr := Tune.f("hit_radius")
-	c.draw_circle(me.pos, maxf(hr, 1.0 / k), COL_ATTACK)
+	var hd := maxf(hr, 1.5 / k)
+	c.draw_circle(me.pos, hd + 1.5 / k, Color.WHITE)
+	c.draw_circle(me.pos, hd, Color("ff2d55"))
 	if Tune.test_mode:
-		c.draw_arc(me.pos, hr + BULLET_CORE, 0, TAU, 32, Color(1, 0.42, 0.54, 0.6), 1.0 / k)
+		c.draw_arc(me.pos, hr + SHOT_CORE, 0, TAU, 32, Color(1, 0.42, 0.54, 0.6), 1.0 / k)
+	# 보상 글자
+	if pop_t > 0.0:
+		var font := ThemeDB.fallback_font
+		var fs := int(22.0 / k)
+		c.draw_string(font, me.pos + Vector2(-30, -40) / k * 1.0 + Vector2(0, -pop_t * 20.0), pop_text, HORIZONTAL_ALIGNMENT_LEFT, -1, fs, Color(0.62, 0.96, 0.82, minf(1.0, pop_t)))
+	# 화면 밖 경고: 화면 가장자리에 화살표
+	var sr := _screen_world_rect().grow(-60.0 / k)
+	for w in walls:
+		var target := _wall_point_near(w, me.pos)
+		if not sr.has_point(target):
+			_edge_arrow(c, sr, target, C_WALL, k)
+	for r in rings:
+		_edge_arrow(c, sr, r.center + (me.pos - r.center).normalized() * 99999.0, C_WALL, k)
 	# 큰 별 하이라이트
 	if running and zoom_t < 0.5:
 		var h := pick(get_global_mouse_position(), 34.0 / k)
 		if h:
 			c.draw_arc(h.pos, 17, 0, TAU, 32, COL_ATTACK, 2.0)
+
+
+const _UNIT := [Vector2(1, 0), Vector2(0.866, 0.5), Vector2(0.5, 0.866), Vector2(0, 1), Vector2(-0.5, 0.866), Vector2(-0.866, 0.5),
+	Vector2(-1, 0), Vector2(-0.866, -0.5), Vector2(-0.5, -0.866), Vector2(0, -1), Vector2(0.5, -0.866), Vector2(0.866, -0.5)]
+const C_OUTLINE := Color(0.02, 0.02, 0.07, 0.9)
+var _unit_poly := PackedVector2Array(_UNIT)
+var _diamond := PackedVector2Array([Vector2(1.6, 0), Vector2(0, 1), Vector2(-1.2, 0), Vector2(0, -1)])
+var _spark := PackedVector2Array()
+
+
+## 탄 그리기. 종류마다 색과 모양이 다르고, 보이는 몸통 = 판정 크기.
+##   주황 쌀알 = 무리가 뿌리는 탄 / 연두 화살촉 = 바깥에서 들어오는 벽·고리 / 분홍 구슬 = 괴수 기술
+##   그림 별(드론) = 팔레트 색 반짝이, 큰 별 = 흰 8각 별(부술 수 있음)
+func _draw_bullets(c: CanvasItem, vr: Rect2, k: float) -> void:
+	if _spark.is_empty():
+		for i in 8:
+			_spark.append(Vector2.from_angle(i * PI / 4.0) * (1.0 if i % 2 == 0 else 0.38))
+	var spin := t * 1.2
+	var ol := 1.6 / k
+	for b in bullets:
+		if not vr.has_point(b.pos):
+			continue
+		if b.big:
+			var poly := PackedVector2Array()
+			var poly_o := PackedVector2Array()
+			for i in 8:
+				var an := i * PI / 4.0 + spin
+				var rr := 2.6 if i % 2 == 1 else 9.0
+				poly.append(b.pos + Vector2.from_angle(an) * rr)
+				poly_o.append(b.pos + Vector2.from_angle(an) * (rr + 2.0))
+			c.draw_colored_polygon(poly_o, C_OUTLINE)
+			c.draw_colored_polygon(poly, Color.WHITE)
+			c.draw_circle(b.pos, 2.4, Color(b.col, 1.0))
+			continue
+		if b.form != null:
+			# 그림 별: 팔레트 색 반짝이 (작은 판정, 은은하게)
+			var a := 0.8 * (0.4 if t < b.safe_until else 1.0)
+			var sr: float = b.core * 2.0
+			c.draw_set_transform(b.pos, spin * 0.5 + b.ph, Vector2(sr, sr))
+			c.draw_colored_polygon(_spark, Color(b.col, a))
+			c.draw_set_transform(Vector2.ZERO)
+			c.draw_circle(b.pos, b.core * 0.55, Color(1, 1, 1, a))
+			continue
+		var r: float = b.core
+		var ang: float = b.vel.angle()
+		if b.col == C_WALL:
+			# 화살촉: 진행 방향으로 뾰족
+			c.draw_set_transform(b.pos, ang, Vector2(r * 1.25 + ol, r + ol))
+			c.draw_colored_polygon(_diamond, C_OUTLINE)
+			c.draw_set_transform(b.pos, ang, Vector2(r * 1.25, r))
+			c.draw_colored_polygon(_diamond, b.col)
+			c.draw_set_transform(b.pos, ang, Vector2(r * 0.6, r * 0.45))
+			c.draw_colored_polygon(_diamond, Color(1, 1, 1, 0.95))
+		elif b.col == C_SKILL:
+			# 구슬: 둥근 몸통 + 흰 테
+			c.draw_circle(b.pos, r + ol, C_OUTLINE)
+			c.draw_circle(b.pos, r, b.col)
+			c.draw_arc(b.pos, r * 0.62, 0, TAU, 12, Color(1, 1, 1, 0.95), maxf(1.2, r * 0.3))
+		else:
+			# 쌀알: 진행 방향으로 길쭉
+			c.draw_set_transform(b.pos, ang, Vector2(r * 1.7 + ol, r + ol))
+			c.draw_colored_polygon(_unit_poly, C_OUTLINE)
+			c.draw_set_transform(b.pos, ang, Vector2(r * 1.7, r))
+			c.draw_colored_polygon(_unit_poly, b.col)
+			c.draw_set_transform(b.pos + Vector2.from_angle(ang) * r * 0.35, ang, Vector2(r * 0.85, r * 0.45))
+			c.draw_colored_polygon(_unit_poly, Color(1, 1, 1, 0.95))
+		c.draw_set_transform(Vector2.ZERO)
+
+
+## 기체: 어두운 테두리 + 흰 몸통 + 플레이어 색 날개 + 조종석 + 깜빡이는 엔진 불꽃
+func _draw_ship(c: CanvasItem, pl: PlayerState, s: float) -> void:
+	var back := -pl.recoil * 3.0
+	var wing_col: Color = pl.color if pl.color != Color.WHITE else Color("5ad1ff")
+	c.draw_set_transform(pl.pos, pl.angle, Vector2(s, s * (1.0 - 0.35 * absf(pl.bank))))
+	var o := Vector2(back, 0)
+	var spd := clampf(pl.vel.length() / maxf(Tune.f("ship_speed"), 1.0), 0.0, 1.0)
+	var fl := 5.0 + 9.0 * spd + randf() * 3.0
+	c.draw_colored_polygon(PackedVector2Array([o + Vector2(-9, -3.2), o + Vector2(-9 - fl, 0), o + Vector2(-9, 3.2)]), Color(1.0, 0.62, 0.2, 0.9))
+	c.draw_colored_polygon(PackedVector2Array([o + Vector2(-9, -1.6), o + Vector2(-9 - fl * 0.55, 0), o + Vector2(-9, 1.6)]), Color(1, 0.95, 0.7))
+	var wing_l := PackedVector2Array([o + Vector2(3, -2.5), o + Vector2(-5, -13), o + Vector2(-10, -12.5), o + Vector2(-7, -2.5)])
+	var wing_r := PackedVector2Array([o + Vector2(3, 2.5), o + Vector2(-5, 13), o + Vector2(-10, 12.5), o + Vector2(-7, 2.5)])
+	var body := PackedVector2Array([o + Vector2(17, 0), o + Vector2(7, -3.4), o + Vector2(-3, -4.4), o + Vector2(-10, -3.4),
+		o + Vector2(-10, 3.4), o + Vector2(-3, 4.4), o + Vector2(7, 3.4)])
+	for poly in [wing_l, wing_r, body]:
+		c.draw_polyline(poly + PackedVector2Array([poly[0]]), C_OUTLINE, 3.2 / s)
+	c.draw_colored_polygon(wing_l, wing_col)
+	c.draw_colored_polygon(wing_r, wing_col)
+	c.draw_colored_polygon(body, Color("eef6ff"))
+	c.draw_line(o + Vector2(-8, 0), o + Vector2(10, 0), Color(wing_col, 0.55), 1.2)
+	c.draw_set_transform(pl.pos + Vector2(4.5 + back, 0).rotated(pl.angle) * s, pl.angle, Vector2(4.2, 2.0) * s)
+	c.draw_colored_polygon(_unit_poly, Color("1b2a5c"))
+	c.draw_set_transform(Vector2.ZERO)
+
+
+func _wall_point_near(w: Wall, p: Vector2) -> Vector2:
+	match w.side:
+		"left":
+			return Vector2(arena.position.x, clampf(p.y, arena.position.y, arena.end.y))
+		"right":
+			return Vector2(arena.end.x, clampf(p.y, arena.position.y, arena.end.y))
+		"top":
+			return Vector2(clampf(p.x, arena.position.x, arena.end.x), arena.position.y)
+		_:
+			return Vector2(clampf(p.x, arena.position.x, arena.end.x), arena.end.y)
+
+
+func _edge_arrow(c: CanvasItem, sr: Rect2, target: Vector2, col: Color, k: float) -> void:
+	var from := sr.get_center()
+	var dir := (target - from).normalized()
+	if dir == Vector2.ZERO:
+		return
+	# 화면 사각형과 만나는 점
+	var tx := (sr.size.x * 0.5) / maxf(absf(dir.x), 0.0001)
+	var ty := (sr.size.y * 0.5) / maxf(absf(dir.y), 0.0001)
+	var p := from + dir * minf(tx, ty)
+	var blink := 0.55 + 0.45 * sin(t * 16.0)
+	var sz := 18.0 / k
+	var pts := PackedVector2Array([p + dir * sz, p - dir * sz * 0.6 + dir.orthogonal() * sz * 0.8, p - dir * sz * 0.6 - dir.orthogonal() * sz * 0.8])
+	c.draw_colored_polygon(pts, Color(col, blink))
 
 
 func _make_glow() -> Texture2D:
@@ -1228,6 +1713,21 @@ func _build_ui() -> void:
 	ui_root.set_anchors_preset(Control.PRESET_FULL_RECT)
 	ui_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(ui_root)
+
+	for i in 2:
+		var bar := ColorRect.new()
+		bar.color = Color(0, 0, 0, 1)
+		bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		bar.set_anchors_preset(Control.PRESET_TOP_WIDE if i == 0 else Control.PRESET_BOTTOM_WIDE)
+		ui_root.add_child(bar)
+		letterbox.append(bar)
+	caption_label = UI.label("", 26, UI.GOLD)
+	caption_label.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	caption_label.grow_horizontal = Control.GROW_DIRECTION_BOTH
+	caption_label.grow_vertical = Control.GROW_DIRECTION_BEGIN
+	caption_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	caption_label.offset_bottom = -24
+	ui_root.add_child(caption_label)
 
 	flash_rect = ColorRect.new()
 	flash_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -1273,7 +1773,7 @@ func _build_ui() -> void:
 	stats.position = Vector2(14, 10)
 	stats.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	ui_root.add_child(stats)
-	hp_label = UI.label("", 18, Color("ff9fcf"))
+	hp_label = UI.label("", 18, Color("9ff5d0"))
 	kill_label = UI.label("", 13, UI.DIM)
 	stats.add_child(hp_label)
 	stats.add_child(kill_label)
@@ -1311,7 +1811,7 @@ func _build_ui() -> void:
 		ui_root.add_child(tune_panel)
 		tools.offset_right = -350
 		song.position.x -= 170
-		skill_label.position.x -= 300
+		skill_label.position.x -= 170
 	else:
 		tools.offset_right = -10
 	tools.offset_bottom = -10

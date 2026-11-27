@@ -10,6 +10,8 @@ var color := Color.WHITE
 var is_local := true
 
 var pos := Vector2.ZERO
+var vel := Vector2.ZERO
+var bank := 0.0
 var angle := -PI / 2
 var cd := 0.0
 var side := 1.0
