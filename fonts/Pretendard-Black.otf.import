@@ -2,13 +2,13 @@
 
 importer="font_data_dynamic"
 type="FontFile"
-uid="uid://cie7gsr1kpmvr"
-path="res://.godot/imported/NotoSansKR-Medium.ttf-4cdf10c2a77d55adae06b97de5a267c4.fontdata"
+uid="uid://dmrk0vdgkdpyf"
+path="res://.godot/imported/Pretendard-Black.otf-087a958e15b727ab8267cd2f44d556bd.fontdata"
 
 [deps]
 
-source_file="res://fonts/NotoSansKR-Medium.ttf"
-dest_files=["res://.godot/imported/NotoSansKR-Medium.ttf-4cdf10c2a77d55adae06b97de5a267c4.fontdata"]
+source_file="res://fonts/Pretendard-Black.otf"
+dest_files=["res://.godot/imported/Pretendard-Black.otf-087a958e15b727ab8267cd2f44d556bd.fontdata"]
 
 [params]
 

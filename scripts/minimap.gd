@@ -20,7 +20,9 @@ static func cell_name(world: Vector2, p: Vector2) -> String:
 
 
 func _draw() -> void:
-	draw_rect(Rect2(Vector2.ZERO, size), Color(0, 0, 0, 0.72))
+	var frame := UI.glass(10, 0, 0.8)
+	frame.shadow_size = 12
+	frame.draw(get_canvas_item(), Rect2(Vector2.ZERO, size))
 	if game == null:
 		return
 	var s: float = size.x / game.world.x
@@ -30,20 +32,20 @@ func _draw() -> void:
 	var pp: Vector2 = game.player_pos * s
 	var cx := clampi(int(pp.x / cw), 0, COLS - 1)
 	var cy := clampi(int(pp.y / ch), 0, ROWS - 1)
-	draw_rect(Rect2(cx * cw, cy * ch, cw, ch), Color(0.56, 1, 0.76, 0.1))
+	draw_rect(Rect2(cx * cw, cy * ch, cw, ch), Color(0.56, 1, 0.76, 0.08))
 	# 격자
-	var gl := Color(1, 1, 1, 0.08)
+	var gl := Color(1, 1, 1, 0.05)
 	for i in range(1, COLS):
 		draw_line(Vector2(i * cw, 0), Vector2(i * cw, size.y), gl, 1.0)
 	for j in range(1, ROWS):
 		draw_line(Vector2(0, j * ch), Vector2(size.x, j * ch), gl, 1.0)
 	var font := get_theme_default_font()
 	for i in COLS:
-		draw_string(font, Vector2(i * cw + 3, 10), char(65 + i), HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.3))
+		draw_string(font, Vector2(i * cw + 5, 13), char(65 + i), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.28))
 	for j in ROWS:
-		draw_string(font, Vector2(2, j * ch + ch - 3), str(j + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 9, Color(1, 1, 1, 0.3))
+		draw_string(font, Vector2(5, j * ch + ch - 5), str(j + 1), HORIZONTAL_ALIGNMENT_LEFT, -1, 10, Color(1, 1, 1, 0.28))
 	var ar: Rect2 = game.arena
-	draw_rect(Rect2(ar.position * s, ar.size * s), Color(0.56, 1, 0.76, 0.3), false, 1.0)
+	draw_rect(Rect2(ar.position * s, ar.size * s), Color(0.56, 1, 0.76, 0.45), false, 1.0)
 	for b in game.bullets:
 		if b.dead:
 			continue
@@ -69,8 +71,11 @@ func _draw() -> void:
 				p1 = Vector2(a2.position.x, a2.end.y); p2 = a2.end
 		draw_line(p1 * s, p2 * s, Color(0.83, 1, 0.31, blink), 3.0)
 	var vr: Rect2 = game.view_rect()
-	draw_rect(Rect2(vr.position * s, vr.size * s), Color(1, 1, 1, 0.85), false, 1.0)
+	var vrr := Rect2(vr.position * s, vr.size * s).intersection(Rect2(Vector2.ZERO, size))
+	draw_rect(vrr, Color(1, 1, 1, 0.05))
+	draw_rect(vrr, Color(1, 1, 1, 0.8), false, 1.0)
 	for pl in game.players:
-		var c := Color("8fffc2") if pl.alive() else Color(1, 0.4, 0.4)
-		draw_rect(Rect2(pl.pos * s - Vector2(2.5, 2.5), Vector2(5, 5)), c)
-	draw_rect(Rect2(Vector2.ZERO, size), Color(1, 1, 1, 0.22), false, 1.0)
+		var c := UI.MINT if pl.alive() else Color(1, 0.4, 0.4)
+		var pp2: Vector2 = pl.pos * s
+		draw_texture_rect(UI.TEX_GLOW, Rect2(pp2 - Vector2(9, 9), Vector2(18, 18)), false, Color(c, 0.8))
+		draw_circle(pp2, 2.6, c)

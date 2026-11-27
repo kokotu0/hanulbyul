@@ -12,7 +12,7 @@ var _info: Label
 
 
 func _ready() -> void:
-	add_theme_stylebox_override("panel", UI.box(Color(0.02, 0.025, 0.06, 0.92), 12, UI.LINE, 14))
+	add_theme_stylebox_override("panel", UI.glass(14, 16, 0.9))
 	custom_minimum_size = Vector2(320, 0)
 	var scroll := ScrollContainer.new()
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
@@ -26,7 +26,7 @@ func _ready() -> void:
 	col.add_theme_constant_override("separation", 6)
 	pad.add_child(col)
 
-	col.add_child(UI.label("수치 테스트", 22, UI.GOLD))
+	col.add_child(UI.title("수치 테스트", 24, Color("fff4d6")))
 	var hint := UI.label("움직이면 바로 적용됩니다. 맵 크기는 다시 시작, 노드 간격은 다음 그림부터 적용돼요.", 12, UI.DIM)
 	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	hint.custom_minimum_size = Vector2(280, 0)
@@ -37,7 +37,7 @@ func _ready() -> void:
 		var spec: Array = Tune.SPEC[key]
 		if spec[6] != last_group:
 			last_group = spec[6]
-			var g := UI.label(Tune.GROUPS[last_group], 15, UI.INK)
+			var g := UI.label(Tune.GROUPS[last_group], 14, UI.MINT)
 			col.add_child(_spacer(4))
 			col.add_child(g)
 		var row := HBoxContainer.new()
@@ -53,6 +53,7 @@ func _ready() -> void:
 		sl.step = spec[3]
 		sl.value = Tune.f(key)
 		sl.focus_mode = Control.FOCUS_NONE
+		_style_slider(sl)
 		sl.value_changed.connect(_on_slider.bind(key))
 		col.add_child(sl)
 		_value_labels[key] = val_l
@@ -60,7 +61,7 @@ func _ready() -> void:
 		_refresh_label(key)
 
 	col.add_child(_spacer(8))
-	col.add_child(UI.label("구간 바로가기", 15, UI.INK))
+	col.add_child(UI.label("구간 바로가기", 14, UI.MINT))
 	var grid := GridContainer.new()
 	grid.columns = 4
 	for sec in Track1.SECTIONS:
@@ -99,6 +100,27 @@ func _ready() -> void:
 
 	_info = UI.label("", 12, UI.DIM)
 	col.add_child(_info)
+
+
+## 슬라이더: 얇은 둥근 트랙 + 민트 채움 + 흰 손잡이
+func _style_slider(sl: HSlider) -> void:
+	var track := UI.box(Color(1, 1, 1, 0.1), 99, Color(0, 0, 0, 0), 0)
+	track.content_margin_top = 2
+	track.content_margin_bottom = 2
+	var fill := UI.box(Color(UI.MINT, 0.8), 99, Color(0, 0, 0, 0), 0)
+	fill.content_margin_top = 2
+	fill.content_margin_bottom = 2
+	sl.add_theme_stylebox_override("slider", track)
+	sl.add_theme_stylebox_override("grabber_area", fill)
+	sl.add_theme_stylebox_override("grabber_area_highlight", fill)
+	var img := Image.create(14, 14, false, Image.FORMAT_RGBA8)
+	for y in 14:
+		for x in 14:
+			var d := Vector2(x + 0.5 - 7, y + 0.5 - 7).length()
+			img.set_pixel(x, y, Color(1, 1, 1, clampf(6.5 - d, 0.0, 1.0)))
+	var tex := ImageTexture.create_from_image(img)
+	sl.add_theme_icon_override("grabber", tex)
+	sl.add_theme_icon_override("grabber_highlight", tex)
 
 
 func set_info(text: String) -> void:
