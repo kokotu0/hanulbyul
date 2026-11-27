@@ -42,11 +42,11 @@ const START_REGION := "west"
 ## bg: 장면마다 바뀌는 배경색 (테스트 화면의 "배경 색 세기"로 조절, 0이면 늘 검은색)
 const SECTIONS := [
 	{"t": 0.0, "name": "도입", "bg": Color("05060f")},
-	{"t": 8.0, "name": "집결", "bg": Color("0a1030")},
-	{"t": 32.0, "name": "괴수의 그림자", "bg": Color("0c0614")},
-	{"t": 40.0, "name": "결전", "bg": Color("1c0a2c")},
-	{"t": 64.0, "name": "폭풍 전야", "bg": Color("061c26")},
-	{"t": 72.0, "name": "피날레", "bg": Color("260c1c")},
+	{"t": 8.0, "name": "집결", "bg": Color("080c1e")},
+	{"t": 32.0, "name": "괴수의 그림자", "bg": Color("0a0810")},
+	{"t": 40.0, "name": "결전", "bg": Color("110a1c")},
+	{"t": 64.0, "name": "폭풍 전야", "bg": Color("06121a")},
+	{"t": 72.0, "name": "피날레", "bg": Color("160a14")},
 	{"t": 92.0, "name": "끝맺음", "bg": Color("05060f")},
 ]
 

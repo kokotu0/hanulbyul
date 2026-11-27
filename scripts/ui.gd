@@ -38,10 +38,10 @@ static func glow_env() -> Environment:
 	e.background_canvas_max_layer = 0
 	e.glow_enabled = true
 	e.glow_normalized = false
-	e.glow_intensity = 0.9
+	e.glow_intensity = 0.55
 	e.glow_strength = 1.0
 	e.glow_bloom = 0.0
-	e.glow_hdr_threshold = 0.55
+	e.glow_hdr_threshold = 0.8
 	e.glow_hdr_scale = 2.0
 	e.glow_blend_mode = Environment.GLOW_BLEND_MODE_SCREEN
 	for i in 7:

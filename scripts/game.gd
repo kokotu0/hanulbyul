@@ -17,7 +17,7 @@ const COL_ATTACK := Color("ff6b8a")
 const BULLET_CORE := 3.0
 const BIG_CORE := 8.0
 ## 날아오는 탄의 판정 반지름. 보이는 몸통 크기와 같다.
-const SHOT_CORE := 4.5
+const SHOT_CORE := 4.0
 const BIG_HP := 2
 const CASCADE_RADIUS := 170.0
 const WARN := 1.2
@@ -26,9 +26,9 @@ const DRONE_VMAX := 430.0
 const DRONE_ACCEL := 1500.0
 const MAX_BULLETS := 6000
 ## 날아오는 탄 색. 그림 별 팔레트(금, 살구, 장미, 라벤더, 얼음, 민트, 흰색)와 겹치지 않게 고른다.
-const C_SHOT := Color("ff6b4a")
-const C_WALL := Color("d4ff4f")
-const C_SKILL := Color("ff3f9e")
+const C_SHOT := Color("ff8a5c")
+const C_WALL := Color("c9f26b")
+const C_SKILL := Color("ff5c93")
 const REVIVE_RADIUS := 60.0
 const SHIP_ACCEL := 2600.0
 const SHIP_DECEL := 3200.0
@@ -634,7 +634,7 @@ func _snap(ev: Dictionary) -> void:
 			if b.form == f:
 				b.vel += (b.pos - c).normalized() * float(ev.power) * randf_range(0.7, 1.3) * ns
 				b.rush = 1.0
-	var cnt: int = ev.get("ring", 0)
+	var cnt: int = int(ev.get("ring", 0) * Tune.f("density"))
 	for k in ev.get("waves", 1):
 		var a0 := randf() * TAU
 		for i in cnt:
@@ -957,10 +957,12 @@ func _update_emitters(dt: float) -> void:
 		if e.form and e.form.alive:
 			e.center = e.form.center
 		var sp: float = ev.speed * ns
+		var dn := Tune.f("density")
 		match ev.kind:
 			"spiral", "flower":
-				while e.acc > ev.rate:
-					e.acc -= ev.rate
+				var srate: float = ev.rate / maxf(dn, 0.1)
+				while e.acc > srate:
+					e.acc -= srate
 					var arms: int = ev.arms
 					for a in arms:
 						var spin: float = e.t * (1.1 if ev.kind == "spiral" else 0.0) + (sin(e.t * 2.0) * 0.8 if ev.kind == "flower" else 0.0)
@@ -968,11 +970,11 @@ func _update_emitters(dt: float) -> void:
 						_shot(e.center, Vector2.from_angle(an) * sp, C_SHOT)
 			"beams":
 				# 예고선을 따라 굵은 빛줄기
-				while e.acc > 0.05:
-					e.acc -= 0.05
+				while e.acc > 0.09:
+					e.acc -= 0.09
 					for d in ev.dirs:
 						var dir := Vector2.from_angle(d)
-						for side in [-1, 0, 1]:
+						for side in [-1, 1]:
 							_shot(e.center + dir * 60.0 + dir.orthogonal() * side * 14.0, dir * ev.speed * ns, C_SKILL)
 				if e.t > 1.2:
 					e.ev.kind = "done"
@@ -981,8 +983,9 @@ func _update_emitters(dt: float) -> void:
 				var hits: int = e.ev.get("hit", 0)
 				if hits < ev.dirs.size() and e.t >= hits * 0.35:
 					var d: float = ev.dirs[hits]
-					for i in 26:
-						var an := d + (float(i) / 25.0 - 0.5) * 2.1
+					var nclaw := maxi(6, int(26 * dn))
+					for i in nclaw:
+						var an := d + (float(i) / (nclaw - 1) - 0.5) * 2.1
 						_shot(e.center + Vector2.from_angle(an) * 90.0, Vector2.from_angle(an) * ev.speed * ns * (0.85 + 0.15 * sin(i * 0.7)), C_SKILL)
 					e.ev.hit = hits + 1
 			"rings_burst":
@@ -993,8 +996,9 @@ func _update_emitters(dt: float) -> void:
 					var w: int = e.ev.get("hit", 0)
 					if w < ev.dirs.size() and e.t >= w * 0.45:
 						var gap: float = ev.dirs[w]
-						for i in 96:
-							var an := float(i) / 96.0 * TAU
+						var nr := maxi(12, int(96 * dn))
+						for i in nr:
+							var an := float(i) / nr * TAU
 							if absf(wrapf(an - gap, -PI, PI)) < 0.3:
 								continue
 							_shot(e.center, Vector2.from_angle(an) * 170.0 * ns, C_SHOT)
@@ -1003,7 +1007,7 @@ func _update_emitters(dt: float) -> void:
 				while e.acc > ev.rate:
 					e.acc -= ev.rate
 					var gap := randf() * TAU
-					var cnt: int = ev.count
+					var cnt: int = maxi(12, int(ev.count * dn))
 					for i in cnt:
 						var an := float(i) / cnt * TAU
 						if absf(wrapf(an - gap, -PI, PI)) < 0.28:
@@ -1561,13 +1565,13 @@ func _draw_fx(c: CanvasItem) -> void:
 		if not vr.has_point(b.pos):
 			continue
 		var free: bool = b.form == null
-		var r := 26.0 if b.big else maxf(b.core * 4.2 if free else 9.0, 3.5 / k)
+		var r := 22.0 if b.big else maxf(b.core * 3.0 if free else 7.0, 3.5 / k)
 		var gc: Color = b.col
 		if free:
-			gc.a = 0.5
+			gc.a = 0.28
 		elif not b.big:
 			# 그림 별은 은은하게, 막 태어난 별은 더 흐리게
-			gc.a = 0.38 * (0.35 if t < b.safe_until else 1.0)
+			gc.a = 0.18 * (0.35 if t < b.safe_until else 1.0)
 		c.draw_texture_rect(glow_tex, Rect2(b.pos - Vector2(r, r), Vector2(r, r) * 2.0), false, gc)
 		if b.big:
 			# 큰 별: 천천히 도는 십자 섬광
@@ -1575,8 +1579,8 @@ func _draw_fx(c: CanvasItem) -> void:
 			c.draw_set_transform(b.pos, t * 0.8 + b.ph, Vector2.ONE)
 			c.draw_texture_rect(UI.TEX_BURST, Rect2(-br, -br, br * 2.0, br * 2.0), false, Color(b.col.lerp(Color.WHITE, 0.4), 0.85))
 			c.draw_set_transform(Vector2.ZERO)
-		elif free:
-			# 날아오는 탄: 진행 방향 반대로 빛 꼬리
+		elif free and false:
+			# (꼬리는 화면이 지저분해져서 끔)
 			var sp: float = b.vel.length()
 			if sp > 1.0:
 				var L: float = clampf(sp * 0.09, 6.0, 60.0) + b.core * 2.0
@@ -1728,8 +1732,8 @@ func _draw_bullets(c: CanvasItem, vr: Rect2, k: float) -> void:
 			continue
 		if b.form != null:
 			# 그림 별: 팔레트 색 반짝이 (작은 판정, 은은하게)
-			var a := 0.85 * (0.4 if t < b.safe_until else 1.0)
-			var sr: float = b.core * 2.1
+			var a := 0.6 * (0.4 if t < b.safe_until else 1.0)
+			var sr: float = b.core * 1.6
 			c.draw_set_transform(b.pos, spin * 0.5 + b.ph, Vector2(sr, sr))
 			c.draw_colored_polygon(_spark, Color(b.col, a))
 			c.draw_set_transform(Vector2.ZERO)
