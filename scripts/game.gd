@@ -142,7 +142,6 @@ var player_pos: Vector2:
 	get:
 		return me.pos if me else Vector2.ZERO
 var hits_taken := 0
-var mode_keys := false
 var tab_held := false
 var overview_btn := false
 var zoom_t := 0.0
@@ -150,6 +149,7 @@ var hitstop := 0.0
 var shake := 0.0
 var flash := 0.0
 var bg_now := Color("05060f")
+var gates: Array = []
 var cam_follow := Vector2.ZERO
 var bg_stars: Array = []
 
@@ -167,7 +167,6 @@ var scene_label: Label
 var hp_label: Label
 var kill_label: Label
 var minimap: Control
-var mode_btn: Button
 var view_btn: Button
 var ov_start: Control
 var ov_pause: Control
@@ -236,6 +235,7 @@ func reset() -> void:
 	missiles.clear()
 	parts.clear()
 	marks.clear()
+	gates.clear()
 	me = PlayerState.new()
 	me.pos = Vector2(arena.get_center().x, arena.position.y + arena.size.y * 0.78)
 	me.max_hp = int(Tune.f("max_hp"))
@@ -329,11 +329,6 @@ func _input(ev: InputEvent) -> void:
 			match ev.keycode:
 				KEY_ESCAPE:
 					toggle_pause()
-				KEY_S:
-					if not mode_keys:
-						me.order = {}
-				KEY_M:
-					set_mode(not mode_keys)
 				KEY_SPACE:
 					use_skill(me, "dash", get_global_mouse_position())
 				KEY_Q:
@@ -341,32 +336,28 @@ func _input(ev: InputEvent) -> void:
 
 
 func _unhandled_input(ev: InputEvent) -> void:
-	if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_RIGHT:
-		command(get_global_mouse_position(), true)
+	if ev is InputEventMouseButton and ev.pressed and ev.button_index in [MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT]:
+		command(get_global_mouse_position())
 
 
-func command(wpos: Vector2, use_target: bool) -> void:
+## 조작: WASD(또는 방향키)로 이동, 마우스로 큰 별을 클릭하면 그 별을 노려 자동 사격.
+## 키를 놓고 있으면 노린 별을 사거리까지 따라간다. 빈 곳을 클릭하면 조준 해제.
+func command(wpos: Vector2) -> void:
 	if not running or paused:
 		return
-	var target: Bullet = pick(wpos, 34.0 / cam.zoom.x) if use_target else null
+	var target: Bullet = pick(wpos, 40.0 / cam.zoom.x)
 	if target:
 		me.order = {"type": "attack", "target": target}
 		_mark(target.pos, COL_ATTACK)
-	elif not mode_keys:
-		var p := wpos.clamp(arena.position, arena.end)
-		me.order = {"type": "move", "pos": p}
-		_mark(p, COL_MOVE)
-
-
-func command_move(wpos: Vector2) -> void:
-	command(wpos, false)
-
-
-func set_mode(keys: bool) -> void:
-	mode_keys = keys
-	mode_btn.text = "조작: WASD" if keys else "조작: 마우스"
-	if me.order.get("type", "") == "move":
+	else:
 		me.order = {}
+
+
+## 지정 위치로 이동 명령 (자동 플레이 테스트, 나중에 터치 조작용)
+func command_move(wpos: Vector2) -> void:
+	if not running or paused:
+		return
+	me.order = {"type": "move", "pos": wpos.clamp(arena.position, arena.end)}
 
 
 func pick(wpos: Vector2, r: float) -> Bullet:
@@ -451,6 +442,9 @@ func _update(dt: float) -> void:
 		q.vel *= 0.93
 		q.m -= dt / q.life
 	parts = parts.filter(func(q: Part) -> bool: return q.m > 0.0)
+	for g in gates:
+		g.t += dt
+	gates = gates.filter(func(g: Dictionary) -> bool: return g.t < 2.2)
 	for m in marks:
 		m.t += dt
 	marks = marks.filter(func(m: Mark) -> bool: return m.t < 0.5)
@@ -554,6 +548,11 @@ func _spawn_formation(ev: Dictionary, settled: bool) -> void:
 	f.n = sets.size()
 	_form_pose(f, t - f.t0)
 	formations.append(f)
+	if not settled:
+		# 새 무리가 태어나는 자리: 빛 고리가 퍼지고 그 중심에서 별들이 쏟아져 나온다
+		gates.append({"pos": f.center, "t": 0.0, "col": Shapes.TINT[f.keys[0]]})
+		_burst(f.center, Color.WHITE, 30, 360.0)
+		flash = maxf(flash, 0.35)
 	var room := MAX_BULLETS - bullets.size()
 	n_max = mini(n_max, maxi(room, 0))
 	for i in n_max:
@@ -767,9 +766,9 @@ func _update_walls() -> void:
 func _update_player(dt: float) -> void:
 	# 내 기체 입력 (멀티에서는 동료 기체의 입력이 네트워크로 들어와 같은 함수를 탄다)
 	var mv := Vector2.ZERO
-	if mode_keys and me.alive():
-		mv.x = float(Input.is_key_pressed(KEY_D)) - float(Input.is_key_pressed(KEY_A))
-		mv.y = float(Input.is_key_pressed(KEY_S)) - float(Input.is_key_pressed(KEY_W))
+	if me.alive():
+		mv.x = float(Input.is_key_pressed(KEY_D) or Input.is_key_pressed(KEY_RIGHT)) - float(Input.is_key_pressed(KEY_A) or Input.is_key_pressed(KEY_LEFT))
+		mv.y = float(Input.is_key_pressed(KEY_S) or Input.is_key_pressed(KEY_DOWN)) - float(Input.is_key_pressed(KEY_W) or Input.is_key_pressed(KEY_UP))
 	for pl in players:
 		_step_player(pl, dt, mv if pl == me else Vector2.ZERO)
 	_update_revive(dt)
@@ -1157,6 +1156,13 @@ func _draw_fx(c: CanvasItem) -> void:
 		c.draw_texture_rect(glow_tex, Rect2(q.pos - Vector2(9, 9), Vector2(18, 18)), false, Color("e8fbff"))
 	for q in parts:
 		c.draw_texture_rect(glow_tex, Rect2(q.pos - Vector2(6, 6), Vector2(12, 12)), false, Color(q.col, q.m))
+	for g in gates:
+		var a: float = 1.0 - g.t / 2.2
+		var core := 60.0 + 40.0 * sin(g.t * 9.0)
+		c.draw_texture_rect(glow_tex, Rect2(g.pos - Vector2(core, core), Vector2(core, core) * 2.0), false, Color(g.col, a))
+		for ring in 3:
+			var rr: float = (g.t * 900.0 + ring * 160.0)
+			c.draw_arc(g.pos, rr, 0, TAU, 96, Color(g.col, a * 0.5), 4.0 / k)
 
 
 func _draw_top(c: CanvasItem) -> void:
@@ -1173,7 +1179,7 @@ func _draw_top(c: CanvasItem) -> void:
 		c.draw_set_transform(Vector2.ZERO)
 	# 기체 (무적 시간엔 깜빡임)
 	var visible_ship := me.invuln <= 0.0 or fmod(me.invuln, 0.16) < 0.09
-	var s := Tune.f("ship_scale") * maxf(1.0, 0.35 / k)
+	var s := Tune.f("ship_scale") * maxf(1.0, 0.55 / k)
 	if visible_ship:
 		c.draw_set_transform(me.pos, me.angle, Vector2(s, s))
 		var back := -me.recoil * 3.0
@@ -1182,7 +1188,7 @@ func _draw_top(c: CanvasItem) -> void:
 		]), Color.WHITE)
 		c.draw_set_transform(Vector2.ZERO)
 	if me.invuln > 0.0:
-		c.draw_arc(me.pos, 18.0 * maxf(1.0, 0.35 / k), 0, TAU, 32, Color(1, 0.62, 0.81, me.invuln / INVULN * 0.7), 2.0 / k)
+		c.draw_arc(me.pos, 18.0 * Tune.f("ship_scale") * maxf(1.0, 0.55 / k), 0, TAU, 32, Color(1, 0.62, 0.81, me.invuln / INVULN * 0.7), 2.0 / k)
 	# 판정 (실제 크기)
 	var hr := Tune.f("hit_radius")
 	c.draw_circle(me.pos, maxf(hr, 1.0 / k), COL_ATTACK)
@@ -1289,11 +1295,7 @@ func _build_ui() -> void:
 	view_btn = UI.button("전체 보기 (Tab)", false, 14)
 	view_btn.toggle_mode = true
 	view_btn.toggled.connect(func(on: bool) -> void: overview_btn = on)
-	mode_btn = UI.button("조작: 마우스", false, 14)
-	mode_btn.tooltip_text = "M 키로도 바꿀 수 있어요"
-	mode_btn.pressed.connect(func() -> void: set_mode(not mode_keys))
 	tools.add_child(view_btn)
-	tools.add_child(mode_btn)
 
 	if Tune.test_mode:
 		tune_panel = TunePanel.new()
@@ -1315,7 +1317,7 @@ func _build_ui() -> void:
 	tools.offset_bottom = -10
 
 	# 오버레이
-	ov_start = _overlay("하떨별", "노래 한 곡이 끝날 때까지 버티세요. HP가 다 닳으면 추락합니다.\n우클릭 이동 · 큰 별 우클릭은 추격 공격 · S 정지 · Tab 누르고 있으면 전체 맵 · Esc 일시정지\n초록 테두리 밖으로는 못 나가요. 노란 경고선이 깜빡이면 바깥에서 탄 벽이 들어옵니다. 초록 틈으로 피하세요.", [["시작", start, true], ["메뉴로", _to_menu, false]])
+	ov_start = _overlay("하떨별", "노래 한 곡이 끝날 때까지 버티세요. HP가 다 닳으면 추락합니다.\nWASD 이동 · 큰 별 클릭하면 조준 후 자동 사격 · Space 대시 · Q 섬광 · Tab 누르고 있으면 전체 맵 · Esc 일시정지\n초록 테두리 밖으로는 못 나가요. 노란 경고선이 깜빡이면 바깥에서 탄 벽이 들어옵니다. 초록 틈으로 피하세요.", [["시작", start, true], ["메뉴로", _to_menu, false]])
 	ov_pause = _overlay("일시정지", "", [["계속하기", toggle_pause, true], ["처음부터", start, false], ["메뉴로", _to_menu, false]])
 	ov_pause.visible = false
 	ov_over = _overlay("추락", "", [["다시 하기", start, true], ["메뉴로", _to_menu, false]])

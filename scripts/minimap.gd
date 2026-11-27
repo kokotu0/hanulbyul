@@ -1,7 +1,6 @@
 extends Control
 ## 전체 맵. 격자(가로 A~F, 세로 1~4)로 내가 어디서 어디를 보는지 보여준다.
 ## 흰 네모 = 지금 내 화면, 밝은 칸 = 내가 있는 칸, 초록 테두리 = 기체가 다닐 수 있는 구역.
-## 우클릭하면 그 위치로 이동.
 
 const COLS := 6
 const ROWS := 4
@@ -11,14 +10,7 @@ var game: Node
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_STOP
-	tooltip_text = "전체 맵 · 우클릭으로 이동"
-
-
-func _gui_input(ev: InputEvent) -> void:
-	if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_RIGHT:
-		var w: Vector2 = game.world
-		game.command_move(ev.position / size * w)
-		accept_event()
+	tooltip_text = "전체 맵"
 
 
 static func cell_name(world: Vector2, p: Vector2) -> String:

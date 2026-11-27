@@ -35,7 +35,7 @@ func _ready() -> void:
 	quit.pressed.connect(func() -> void: get_tree().quit())
 	col.add_child(quit)
 	col.add_child(_gap(10))
-	var help := UI.label("우클릭 이동 · 큰 별 우클릭 추격 공격 · S 정지 · Tab 전체 맵 · Esc 일시정지", 14, UI.DIM)
+	var help := UI.label("WASD 이동 · 큰 별 클릭 조준 · Space 대시 · Q 섬광 · Tab 전체 맵 · Esc 일시정지", 14, UI.DIM)
 	help.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	col.add_child(help)
 
